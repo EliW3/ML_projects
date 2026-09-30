@@ -99,3 +99,11 @@ with torch.no_grad():
     logits = model(home, away, tour, elo_feats_fout)
     probs = torch.softmax(logits, dim=1)
     print(probs, "([P(win home team), P(draw), P(win away team)")
+
+def get_expected_values(self, home_win_betting_odds, draw_betting_odds, away_win_betting_odds, probs):
+    home_win_expected_value = home_win_betting_odds * probs[0]
+    draw_expected_value = draw_betting_odds * probs[1]
+    away_win_expected_value = away_win_betting_odds[2]
+    print(f"Home win Expected value: {home_win_expected_value}")
+    print(f"Draw Expected value: {draw_expected_value}")
+    print(f"Away win Expected value: {away_win_expected_value}")
