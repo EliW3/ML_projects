@@ -1,0 +1,189 @@
+import pandas as pd
+from collections import defaultdict
+import datetime
+
+def getData(home_team, away_team, timeframe=2015, current_time_year=2026, current_time_month=12, current_time_day=28):
+    url = "https://raw.githubusercontent.com/martj42/international_results/master/results.csv"
+    df = pd.read_csv(url)
+    df['date'] = pd.to_datetime(df['date'])
+    df = df.sort_values(by="date").reset_index(drop=True)
+    
+    current_elo = defaultdict(lambda: 1500.0)
+    current_elo_away_specific = defaultdict(lambda:1500.0)
+    current_elo_home_specific = defaultdict(lambda:1500.0)
+    current_elo_goal_home = defaultdict(lambda:1500.0)
+    current_elo_goal_away = defaultdict(lambda:1500.0)
+    
+    current_elo_attack = defaultdict(lambda: 1500.0)
+    current_elo_defense = defaultdict(lambda: 1500.0)
+    
+    K = 24 
+    K_goals = 10 
+
+    elo_home_before = []
+    elo_away_before = []
+    elo_home_after = []
+    elo_away_after = []
+
+    elo_away_specific_before = []
+    elo_home_specific_before = []
+    elo_away_specific_after = []
+    elo_home_specific_after = []
+
+    elo_goals_home_before = []
+    elo_goals_away_before = []
+    elo_goals_home_after = []
+    elo_goals_away_after = []
+    
+    elo_attack_home_before = []
+    elo_attack_away_before = []
+    elo_attack_home_after = []
+    elo_attack_away_after = []
+    
+    elo_defense_home_before = []
+    elo_defense_away_before = []
+    elo_defense_home_after = []
+    elo_defense_away_after = []
+
+    for row in df.itertuples():
+        home = row.home_team
+        away = row.away_team
+
+        r_home = current_elo[home]
+        r_away = current_elo[away]
+
+        r_home_specific = current_elo_home_specific[home]
+        r_away_specific = current_elo_away_specific[away]
+
+        r_goals_home = current_elo_goal_home[home]
+        r_goals_away = current_elo_goal_away[away]
+        
+        r_att_home = current_elo_attack[home]
+        r_def_home = current_elo_defense[home]
+        r_att_away = current_elo_attack[away]
+        r_def_away = current_elo_defense[away]
+        
+        elo_home_before.append(r_home)
+        elo_away_before.append(r_away)
+        
+        elo_home_specific_before.append(r_home_specific)
+        elo_away_specific_before.append(r_away_specific)
+
+        elo_goals_home_before.append(r_goals_home)
+        elo_goals_away_before.append(r_goals_away)
+        
+        elo_attack_home_before.append(r_att_home)
+        elo_attack_away_before.append(r_att_away)
+        elo_defense_home_before.append(r_def_home)
+        elo_defense_away_before.append(r_def_away)
+
+        e_home = 1 / (1 + 10 ** ((r_away - r_home) / 400))
+        e_away = 1 / (1 + 10 ** ((r_home - r_away) / 400))
+
+        e_home_spec = 1 / (1 + 10 ** ((r_away_specific - r_home_specific) / 400))
+        e_away_spec = 1 - e_home_spec
+
+        e_goals_scored_home = 1.4 * (10 ** ((r_att_home - r_def_away) / 400))
+        e_goals_scored_away = 1.4 * (10 ** ((r_att_away - r_def_home) / 400))
+
+        multiplier = np.log(((row.home_score - row.away_score) * (row.home_score - row.away_score)) ** 0.5 + 1) * 1.75 / (1.75 + 0.00175 * ((r_home - r_away) * (r_home - r_away)) ** 0.5)
+        if row.home_score - row.away_score == 0:
+            multiplier = 1.0
+
+        if row.home_score > row.away_score:
+            s_home, s_away = 1.0, 0.0
+        elif row.home_score < row.away_score:
+            s_home, s_away = 0.0, 1.0
+        else:
+            s_home, s_away = 0.5, 0.5
+
+        new_r_home = r_home + K * (s_home - e_home)
+        new_r_away = r_away + K * (s_away - e_away)
+
+        new_home_specific_r = r_home_specific + K * (s_home - e_home_spec)
+        new_away_specific_r = r_away_specific + K * (s_away - e_away_spec)
+
+        new_goal_home = r_goals_home + K * multiplier * (s_home - e_home)
+        new_goal_away = r_goals_away + K * multiplier * (s_away - e_away)
+        
+        new_att_home = r_att_home + K_goals * (row.home_score - e_goals_scored_home)
+        new_def_away = r_def_away - K_goals * (row.home_score - e_goals_scored_home) 
+        
+        new_att_away = r_att_away + K_goals * (row.away_score - e_goals_scored_away)
+        new_def_home = r_def_home - K_goals * (row.away_score - e_goals_scored_away) 
+        
+        elo_home_after.append(new_r_home)
+        elo_away_after.append(new_r_away)
+
+        elo_home_specific_after.append(new_home_specific_r)
+        elo_away_specific_after.append(new_away_specific_r)
+
+        elo_goals_home_after.append(new_goal_home)
+        elo_goals_away_after.append(new_goal_away)
+        
+        elo_attack_home_after.append(new_att_home)
+        elo_attack_away_after.append(new_att_away)
+        elo_defense_home_after.append(new_def_home)
+        elo_defense_away_after.append(new_def_away)
+
+        current_elo[home] = new_r_home
+        current_elo[away] = new_r_away
+
+        if not getattr(row, 'neutral', False):
+            current_elo_away_specific[away] = new_away_specific_r
+            current_elo_home_specific[home] = new_home_specific_r
+
+        current_elo_goal_home[home] = new_goal_home
+        current_elo_goal_away[away] = new_goal_away
+        
+        current_elo_attack[home] = new_att_home
+        current_elo_attack[away] = new_att_away
+        current_elo_defense[home] = new_def_home
+        current_elo_defense[away] = new_def_away
+
+    df["ELO_home_before"] = elo_home_before
+    df["ELO_away_before"] = elo_away_before
+    df["ELO_home_after"] = elo_home_after
+    df["ELO_away_after"] = elo_away_after
+
+    df["ELO_home_specific_before"] = elo_home_specific_before
+    df["ELO_away_specific_before"] = elo_away_specific_before
+    df["ELO_home_specific_after"] = elo_home_specific_after
+    df["ELO_away_specific_after"] = elo_away_specific_after
+
+    df["ELO_goal_specific_home_before"] = elo_goals_home_before
+    df["ELO_goal_specific_away_before"] = elo_goals_away_before
+    df["ELO_goal_specific_home_after"] = elo_goals_home_after
+    df["ELO_goal_specific_away_after"] = elo_goals_away_after
+
+    df["ELO_attack_home_before"] = elo_attack_home_before
+    df["ELO_attack_away_before"] = elo_attack_away_before
+    df["ELO_attack_home_after"] = elo_attack_home_after
+    df["ELO_attack_away_after"] = elo_attack_away_after
+    
+    df["ELO_defense_home_before"] = elo_defense_home_before
+    df["ELO_defense_away_before"] = elo_defense_away_before
+    df["ELO_defense_home_after"] = elo_defense_home_after
+    df["ELO_defense_away_after"] = elo_defense_away_after
+    
+    df = df[df["date"] >= datetime.datetime(timeframe, 1, 1)]
+    df = df[df["date"] < datetime.datetime(current_time_year, current_time_month, current_time_day)]
+    elo_home_goal_spec = df[df["home_team"] == home_team]["ELO_goal_specific_home_before"].iloc[-1]
+    elo_away_goal_spec = df[df["away_team"] == away_team]["ELO_goal_specific_away_before"].iloc[-1]
+    elo_home_attack_spec = df[df["home_team"] == home_team]["ELO_attack_home_before"].iloc[-1] 
+    elo_away_attack_spec = df[df["away_team"] == away_team]["ELO_attack_away_before"].iloc[-1] 
+    elo_home_defense_spec = df[df["home_team"] == home_team]["ELO_defense_home_before"].iloc[-1]
+    elo_away_defense_spec = df[df["away_team"] == away_team]["ELO_defense_away_before"].iloc[-1]
+    elo_home = df[df["home_team"] == home_team]["ELO_home_before"].iloc[-1]
+    elo_away = df[df["away_team"] == away_team]["ELO_away_before"].iloc[-1]
+    elo_home_home_spec = df[df["home_team"] == home_team]["ELO_home_specific_before"].iloc[-1]
+    elo_away_away_spec = df[df["away_team"] == away_team]["ELO_away_specific_before"].iloc[-1]
+    df["Result"] = 0
+    for i,row in df.iterrows():
+        if row.home_score > row.away_score:
+            df.loc[i,"Result"]=0
+        elif row.home_score == row.away_score: 
+            df.loc[i,"Result"]=1
+        else: 
+            df.loc[i,"Result"] = 2
+    return df, elo_home_goal_spec, elo_away_goal_spec, elo_home_attack_spec, elo_away_attack_spec, elo_home_defense_spec, elo_away_defense_spec, elo_home, elo_away, elo_home_home_spec, elo_away_away_spec
