@@ -134,7 +134,6 @@ for row in df.itertuples():
     new_rdh = rdh - K_GOALS * diff_a
 
     current_elo[h], current_elo[a] = new_rh, new_ra
-    home_elo[h], away_elo[a] = new_rhs, new_ras
     goal_home_elo[h], goal_away_elo[a] = new_rgh, new_rga
     attack_elo[h], attack_elo[a] = new_rah, new_raa
     defense_elo[h], defense_elo[a] = new_rdh, new_rda
@@ -185,15 +184,35 @@ df = df[
 
 df = df.dropna().reset_index(drop=True)
 
-teams = pd.concat([df["home_team"], df["away_team"]]).unique()
-team_id = {team: i for i, team in enumerate(teams)}
+train_df = df[df["date"] < f"{TEST_START}-01-01"].copy()
 
-tournaments = df["tournament"].unique()
-tournament_id = {t: i for i, t in enumerate(tournaments)}
+test_df = df[
+    (df["date"] >= f"{TEST_START}-01-01") &
+    (df["date"] < f"{TEST_END}-01-01")
+].copy()
+
+
+train_teams = pd.concat([
+    train_df["home_team"],
+    train_df["away_team"]
+]).unique()
+
+train_tournaments = train_df["tournament"].unique()
+
+team_id = {
+    team: i
+    for i, team in enumerate(train_teams)
+}
+
+tournament_id = {
+    tournament: i
+    for i, tournament in enumerate(train_tournaments)
+}
 
 df["home_id"] = df["home_team"].map(team_id)
 df["away_id"] = df["away_team"].map(team_id)
 df["tournament_id"] = df["tournament"].map(tournament_id)
+df = df.dropna().reset_index(drop=True)
 
 elo_columns = [
     "ELO_goal_home",
@@ -213,10 +232,10 @@ class FootballPredictor(nn.Module):
         super().__init__()
         self.temperature = nn.Parameter(torch.ones(1) * 1.85)
 
-        self.team_embedding = nn.Embedding(len(teams), 8)
-        self.team_home_specific_embedding = nn.Embedding(len(teams), 8)
-        self.team_away_specific_embedding = nn.Embedding(len(teams), 8)
-        self.competition_embedding = nn.Embedding(len(tournaments), 4)
+        self.team_embedding = nn.Embedding(len(train_teams), 8)
+        self.team_home_specific_embedding = nn.Embedding(len(train_teams), 8)
+        self.team_away_specific_embedding = nn.Embedding(len(train_teams), 8)
+        self.competition_embedding = nn.Embedding(len(train_tournaments), 4)
 
         self.fc = nn.Sequential(
             nn.Linear(46, 128),
@@ -309,6 +328,47 @@ for epoch in range(30):
         f"Epoch {epoch + 1:02d} "
         f"Loss: {total_loss / len(loader):.4f}"
     )
+def get_latest_team_state(team):
+    home_matches = df[df["home_team"] == team]
+    away_matches = df[df["away_team"] == team]
+
+    candidates = []
+
+    if len(home_matches) > 0:
+        row = home_matches.iloc[-1]
+        candidates.append(("home", row))
+
+    if len(away_matches) > 0:
+        row = away_matches.iloc[-1]
+        candidates.append(("away", row))
+
+    if not candidates:
+        raise ValueError(f"No historical matches found for {team}")
+
+    role, row = max(
+        candidates,
+        key=lambda x: x[1]["date"]
+    )
+
+    if role == "home":
+        return {
+            "date": row["date"],
+            "ELO_goal": row["ELO_goal_home"],
+            "ELO_attack": row["ELO_attack_home"],
+            "ELO_defense": row["ELO_defense_home"],
+            "ELO": row["ELO_home"],
+            "ELO_specific": row["ELO_home_specific"]
+        }
+
+    else:
+        return {
+            "date": row["date"],
+            "ELO_goal": row["ELO_goal_away"],
+            "ELO_attack": row["ELO_attack_away"],
+            "ELO_defense": row["ELO_defense_away"],
+            "ELO": row["ELO_away"],
+            "ELO_specific": row["ELO_away_specific"]
+        }
 
 def predict_matches(matches):
     model.eval()
@@ -323,26 +383,20 @@ def predict_matches(matches):
             if competition not in tournament_id:
                 raise ValueError(f"Unknown competition: {competition}")
 
-            hm = df[df["home_team"] == home_team]
-            am = df[df["away_team"] == away_team]
-
-            if len(hm) == 0 or len(am) == 0:
-                raise ValueError("No historical ELO data found.")
-
-            h = hm.iloc[-1]
-            a = am.iloc[-1]
+            h = get_latest_team_state(home_team)
+            a = get_latest_team_state(away_team)
 
             elo = torch.tensor([[
-                h["ELO_goal_home"],
-                a["ELO_goal_away"],
-                h["ELO_attack_home"],
-                a["ELO_attack_away"],
-                h["ELO_defense_home"],
-                a["ELO_defense_away"],
-                h["ELO_home"],
-                a["ELO_away"],
-                h["ELO_home_specific"],
-                a["ELO_away_specific"]
+                h["ELO_goal"],
+                a["ELO_goal"],
+                h["ELO_attack"],
+                a["ELO_attack"],
+                h["ELO_defense"],
+                a["ELO_defense"],
+                h["ELO"],
+                a["ELO"],
+                h["ELO_specific"],
+                a["ELO_specific"]
             ]], dtype=torch.float32) / 400.0
 
             home = torch.tensor([team_id[home_team]])
@@ -518,6 +572,8 @@ matches = [
 
 future_predictions = predict_matches(matches)
 
+print("\nPredictions:")
+print(future_predictions.to_string(index=False))
 print("\nPredictions:")
 print(future_predictions.to_string(index=False))
 
