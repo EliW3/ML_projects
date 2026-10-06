@@ -32,7 +32,6 @@ goals_scored_history = defaultdict(list)
 goals_conceded_history = defaultdict(list)
 form_history = defaultdict(list)
 clean_sheet_history = defaultdict(list)
-last_match_date = defaultdict(lambda: None)
 
 features = []
 
@@ -101,9 +100,6 @@ for row in df.itertuples():
 
         "Clean_sheets_home": np.sum(cs_h) if cs_h else np.nan,
         "Clean_sheets_away": np.sum(cs_a) if cs_a else np.nan,
-
-        "Rest_days_home": (date - last_match_date[h]).days if last_match_date[h] else np.nan,
-        "Rest_days_away": (date - last_match_date[a]).days if last_match_date[a] else np.nan
     })
 
     gd = hs - aws
@@ -226,6 +222,22 @@ elo_columns = [
     "ELO_home_specific",
     "ELO_away_specific"
 ]
+running_columns = [
+    "Winning_streak_home",
+    "Winning_streak_away",
+    "Not_losing_streak_home",
+    "Not_losing_streak_away",
+    "Rolling_goals_scored_home",
+    "Rolling_goals_conceded_home",
+    "Rolling_goals_scored_away",
+    "Rolling_goals_conceded_away",
+    "Rolling_goal_difference_home",
+    "Rolling_goal_difference_away",
+    "Form_points_home",
+    "Form_points_away",
+    "Clean_sheets_home",
+    "Clean_sheets_away"
+]
 
 class FootballPredictor(nn.Module):
     def __init__(self):
@@ -238,7 +250,7 @@ class FootballPredictor(nn.Module):
         self.competition_embedding = nn.Embedding(len(train_tournaments), 4)
 
         self.fc = nn.Sequential(
-            nn.Linear(46, 128),
+            nn.Linear(60, 128),
             nn.LayerNorm(128),
             nn.ReLU(),
             nn.Dropout(0.3),
@@ -256,14 +268,14 @@ class FootballPredictor(nn.Module):
             nn.Linear(32, 3)
         )
 
-    def forward(self, home, away, tournament, elo):
+    def forward(self, home, away, tournament, elo, running):
         h = self.team_embedding(home)
         a = self.team_embedding(away)
         hs = self.team_home_specific_embedding(home)
         aw = self.team_away_specific_embedding(away)
         c = self.competition_embedding(tournament)
 
-        x = torch.cat([h, a, hs, aw, c, elo], dim=1)
+        x = torch.cat([h, a, hs, aw, c, elo, running], dim=1)
         return self.fc(x) / self.temperature
 
 train_df = df[df["date"] < f"{TEST_START}-01-01"].copy()
@@ -281,6 +293,11 @@ X_elo = torch.tensor(
     dtype=torch.float32
 ) / 400.0
 
+X_running = torch.tensor(
+    train_df[running_columns].values,
+    dtype=torch.float32
+)
+
 y = torch.tensor(
     train_df["Result"].values,
     dtype=torch.long
@@ -291,6 +308,7 @@ dataset = TensorDataset(
     X_away,
     X_tournament,
     X_elo,
+    X_running,
     y
 )
 
@@ -308,12 +326,13 @@ for epoch in range(30):
     model.train()
     total_loss = 0
 
-    for home, away, tournament, elo, target in loader:
+    for home, away, tournament, elo, running, target in loader:
         logits = model(
             home,
             away,
             tournament,
-            elo
+            elo,
+            running
         )
 
         loss = loss_func(logits, target)
@@ -328,6 +347,7 @@ for epoch in range(30):
         f"Epoch {epoch + 1:02d} "
         f"Loss: {total_loss / len(loader):.4f}"
     )
+
 def get_latest_team_state(team):
     home_matches = df[df["home_team"] == team]
     away_matches = df[df["away_team"] == team]
@@ -335,12 +355,10 @@ def get_latest_team_state(team):
     candidates = []
 
     if len(home_matches) > 0:
-        row = home_matches.iloc[-1]
-        candidates.append(("home", row))
+        candidates.append(("home", home_matches.iloc[-1]))
 
     if len(away_matches) > 0:
-        row = away_matches.iloc[-1]
-        candidates.append(("away", row))
+        candidates.append(("away", away_matches.iloc[-1]))
 
     if not candidates:
         raise ValueError(f"No historical matches found for {team}")
@@ -351,24 +369,40 @@ def get_latest_team_state(team):
     )
 
     if role == "home":
-        return {
-            "date": row["date"],
-            "ELO_goal": row["ELO_goal_home"],
-            "ELO_attack": row["ELO_attack_home"],
-            "ELO_defense": row["ELO_defense_home"],
-            "ELO": row["ELO_home"],
-            "ELO_specific": row["ELO_home_specific"]
-        }
-
+        suffix = "home"
     else:
-        return {
-            "date": row["date"],
-            "ELO_goal": row["ELO_goal_away"],
-            "ELO_attack": row["ELO_attack_away"],
-            "ELO_defense": row["ELO_defense_away"],
-            "ELO": row["ELO_away"],
-            "ELO_specific": row["ELO_away_specific"]
-        }
+        suffix = "away"
+
+    return {
+        "ELO_goal": row[f"ELO_goal_{suffix}"],
+        "ELO_attack": row[f"ELO_attack_{suffix}"],
+        "ELO_defense": row[f"ELO_defense_{suffix}"],
+        "ELO": row[f"ELO_{suffix}"],
+        "ELO_specific": row[f"ELO_{suffix}_specific"],
+
+        "Winning_streak": row[f"Winning_streak_{suffix}"],
+        "Not_losing_streak": row[f"Not_losing_streak_{suffix}"],
+
+        "Rolling_goals_scored": row[
+            f"Rolling_goals_scored_{suffix}"
+        ],
+
+        "Rolling_goals_conceded": row[
+            f"Rolling_goals_conceded_{suffix}"
+        ],
+
+        "Rolling_goal_difference": row[
+            f"Rolling_goal_difference_{suffix}"
+        ],
+
+        "Form_points": row[
+            f"Form_points_{suffix}"
+        ],
+
+        "Clean_sheets": row[
+            f"Clean_sheets_{suffix}"
+        ],
+    }
 
 def predict_matches(matches):
     model.eval()
@@ -399,12 +433,35 @@ def predict_matches(matches):
                 a["ELO_specific"]
             ]], dtype=torch.float32) / 400.0
 
+            running = torch.tensor([[
+                h["Winning_streak"],
+                a["Winning_streak"],
+            
+                h["Not_losing_streak"],
+                a["Not_losing_streak"],
+            
+                h["Rolling_goals_scored"],
+                h["Rolling_goals_conceded"],
+            
+                a["Rolling_goals_scored"],
+                a["Rolling_goals_conceded"],
+            
+                h["Rolling_goal_difference"],
+                a["Rolling_goal_difference"],
+            
+                h["Form_points"],
+                a["Form_points"],
+            
+                h["Clean_sheets"],
+                a["Clean_sheets"]
+            ]], dtype=torch.float32)
+
             home = torch.tensor([team_id[home_team]])
             away = torch.tensor([team_id[away_team]])
             tournament = torch.tensor([tournament_id[competition]])
 
             probs = torch.softmax(
-                model(home, away, tournament, elo),
+                model(home, away, tournament, elo, running),
                 dim=1
             )[0]
 
@@ -440,6 +497,29 @@ def backtest(model, test_df):
                 row["ELO_away_specific"]
             ]], dtype=torch.float32) / 400.0
 
+            running = torch.tensor([[
+    row["Winning_streak_home"],
+    row["Winning_streak_away"],
+
+    row["Not_losing_streak_home"],
+    row["Not_losing_streak_away"],
+
+    row["Rolling_goals_scored_home"],
+    row["Rolling_goals_conceded_home"],
+
+    row["Rolling_goals_scored_away"],
+    row["Rolling_goals_conceded_away"],
+
+    row["Rolling_goal_difference_home"],
+    row["Rolling_goal_difference_away"],
+
+    row["Form_points_home"],
+    row["Form_points_away"],
+
+    row["Clean_sheets_home"],
+    row["Clean_sheets_away"]
+]], dtype=torch.float32)
+
             home = torch.tensor([row["home_id"]], dtype=torch.long)
             away = torch.tensor([row["away_id"]], dtype=torch.long)
             tournament = torch.tensor(
@@ -448,7 +528,7 @@ def backtest(model, test_df):
             )
 
             probs = torch.softmax(
-                model(home, away, tournament, elo),
+                model(home, away, tournament, elo, running),
                 dim=1
             )[0]
 
@@ -574,6 +654,3 @@ future_predictions = predict_matches(matches)
 
 print("\nPredictions:")
 print(future_predictions.to_string(index=False))
-print("\nPredictions:")
-print(future_predictions.to_string(index=False))
-
