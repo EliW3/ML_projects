@@ -168,9 +168,6 @@ for row in df.itertuples():
         not_losing_streak[h] = 0
         not_losing_streak[a] += 1
 
-    last_match_date[h] = date
-    last_match_date[a] = date
-
 df = pd.DataFrame(features)
 
 df = df[
